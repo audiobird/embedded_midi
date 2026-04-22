@@ -2,9 +2,7 @@
 #include "embedded_midi/sysex_buffer.hh"
 #include <print>
 
-struct PrintParser : EmbeddedMidi::SysexBuffer<32>, EmbeddedMidi::Parser {
-  friend class EmbeddedMidi::Parser;
-
+struct PrintHandler : EmbeddedMidi::DefaultHandler {
   void handle_clock() { std::println("clock"); }
   void handle_start() { std::println("start"); }
   void handle_continue() { std::println("continue"); }
@@ -12,6 +10,12 @@ struct PrintParser : EmbeddedMidi::SysexBuffer<32>, EmbeddedMidi::Parser {
   void handle_active_sensing() { std::println("active sensing"); }
   void handle_system_reset() { std::println("system reset"); }
   void handle_tune_request() { std::println("tune request"); }
+
+  void handle_sysex_byte(uint8_t b) { std::println("sysex byte {}", b); }
+
+  void handle_end_of_sysex(bool valid) {
+    std::println("sysex end, valid: {}", valid);
+  }
 
   void handle_sysex(const std::span<const uint8_t> sysex) {
     std::println("sysex {}", sysex);
@@ -118,6 +122,8 @@ static constexpr std::array<uint8_t, 256> midi_stream {
     0xf7,
 
     // sysex that is too big
+    // take note that in the sysex buffer example this overflows
+    // but in the non buffered version this is perfectly valid!
     0xf0, 
     1, 2, 0xf8, 3, 4, 5, 6, 7, 8, 
     1, 2, 0xf8, 3, 4, 5, 6, 7, 8, 
@@ -131,7 +137,14 @@ static constexpr std::array<uint8_t, 256> midi_stream {
 int main() {
   std::println("Parser example\n");
 
-  PrintParser p;
+  {
+  EmbeddedMidi::Parser p;
+  p.parse(midi_stream, PrintHandler{});
+  }
 
-  p.parse(midi_stream);
+  std::println("\n\nParser example with sysex buffer\n");
+  {
+  EmbeddedMidi::ParserWithSysexBuffer<32> sp;
+  sp.parse(midi_stream, PrintHandler{});
+  }
 }
