@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <span>
+#include <utility>
 
 namespace EmbeddedMidi {
 
@@ -21,11 +22,9 @@ public:
 
   template <typename T>
   constexpr void parse(this auto &self, const uint8_t raw_midi, T &&handler) {
-    if (raw_midi & 0x80) {
-      self.parse_status_byte(raw_midi, std::forward<T>(handler));
-    } else {
-      self.parse_data_byte(raw_midi, std::forward<T>(handler));
-    }
+    (raw_midi & 0x80)
+        ? self.parse_status_byte(raw_midi, std::forward<T>(handler))
+        : self.parse_data_byte(raw_midi, std::forward<T>(handler));
   };
 
 private:
@@ -33,7 +32,9 @@ private:
   constexpr void handle_three_byte_message(const uint8_t third_byte,
                                            T &&handler) {
     // only one non-channel message with three bytes
-    if (run_stat_reg == 0xf2) {
+    // if spp is 0xf2, why do we check if 0x00?
+    // see spp note below.
+    if (run_stat_reg == 0x00) {
       handler.handle_song_position_pointer(buf, third_byte);
       return;
     }
@@ -49,7 +50,9 @@ private:
       }
       // note on with 0 velocity is a note off
       [[fallthrough]];
-    case 0x80: handler.handle_note_off(midi_channel, buf, third_byte); return;
+    case 0x80:
+      handler.handle_note_off(midi_channel, buf, third_byte);
+      return;
     case 0xA0:
       handler.handle_polyphonic_aftertouch(midi_channel, buf, third_byte);
       return;
@@ -60,8 +63,12 @@ private:
         handler.handle_control_change(midi_channel, buf, third_byte);
       }
       return;
-    case 0xE0: handler.handle_pitch_bend(midi_channel, buf, third_byte); return;
+    case 0xE0:
+      handler.handle_pitch_bend(midi_channel, buf, third_byte);
+      return;
     }
+
+    std::unreachable();
   }
 
   template <typename T>
@@ -71,16 +78,19 @@ private:
     const auto midi_channel = run_stat_reg & 0x0f;
 
     switch (status) {
-    case 0xC0: handler.handle_program_change(midi_channel, second_byte); return;
+    case 0xC0:
+      handler.handle_program_change(midi_channel, second_byte);
+      return;
     case 0xD0:
       handler.handle_channel_pressure(midi_channel, second_byte);
       return;
     }
+
+    std::unreachable();
   }
 
   template <typename T>
-  constexpr void parse_data_byte(this auto &self, const uint8_t input,
-                                 T &&handler) {
+  constexpr void parse_data_byte(this auto &self, uint8_t input, T &&handler) {
     auto &t = static_cast<Parser &>(self);
     if (t.third_byte_flag) {
       t.third_byte_flag = {};
@@ -111,6 +121,11 @@ private:
     }
 
     if (t.run_stat_reg == 0xF2) {
+      // spp note
+      // system common messages should clear run stat. The flowchart
+      // on page A-3 of midi spec wants us to do it right here.
+      // so in 3 byte message handler above, we check if run_stat == 0
+      // instead of spp status 0xf2
       t.run_stat_reg = {};
       t.third_byte_flag = true;
       t.buf = input;
@@ -135,21 +150,38 @@ private:
   }
 
   template <typename T>
-  constexpr void parse_status_byte(this auto &self, const uint8_t input,
+  constexpr void parse_status_byte(this auto &self, uint8_t input,
                                    T &&handler) {
     // midi realtime always wins!
     auto &t = static_cast<Parser &>(self);
 
     switch (input) {
-    case 0xf8: handler.handle_clock(); return;
-    case 0xf9: handler.handle_undefined_realtime(input); return;
-    case 0xfa: handler.handle_start(); return;
-    case 0xfb: handler.handle_continue(); return;
-    case 0xfc: handler.handle_stop(); return;
-    case 0xfd: handler.handle_undefined_realtime(input); return;
-    case 0xfe: handler.handle_active_sensing(); return;
-    case 0xff: handler.handle_system_reset(); return;
-    default:   break;
+    case 0xf8:
+      handler.handle_clock();
+      return;
+    case 0xf9:
+      handler.handle_undefined_realtime(input);
+      return;
+    case 0xfa:
+      handler.handle_start();
+      return;
+    case 0xfb:
+      handler.handle_continue();
+      return;
+    case 0xfc:
+      handler.handle_stop();
+      return;
+    case 0xfd:
+      handler.handle_undefined_realtime(input);
+      return;
+    case 0xfe:
+      handler.handle_active_sensing();
+      return;
+    case 0xff:
+      handler.handle_system_reset();
+      return;
+    default:
+      break;
     }
 
     if (t.run_stat_reg == 0xf0) {
@@ -161,7 +193,9 @@ private:
     t.third_byte_flag = {};
 
     switch (input) {
-    case 0xf6: handler.handle_tune_request(); return;
+    case 0xf6:
+      handler.handle_tune_request();
+      return;
     }
   }
 
@@ -183,7 +217,7 @@ template <uint32_t size_> class ParserWithSysexBuffer : public Parser {
 
 private:
   template <typename T>
-  constexpr void handle_sysex_byte_internal(const uint8_t data, T &&) {
+  constexpr void handle_sysex_byte_internal(uint8_t data, T &&) {
     if (cnt < size_) {
       sys[cnt++] = data;
       return;
@@ -193,7 +227,7 @@ private:
   }
 
   template <typename T>
-  constexpr void handle_end_of_sysex_internal(const bool valid, T &&handler) {
+  constexpr void handle_end_of_sysex_internal(bool valid, T &&handler) {
     if (valid) {
       if (cnt > size_) {
         handler.handle_sysex_overflow(cnt - size_);
@@ -210,7 +244,7 @@ private:
 // handles everything with a NOP
 // you can inherit this class and override functions
 struct DefaultHandler {
-  constexpr void handle_undefined_realtime(const uint8_t b) {}
+  constexpr void handle_undefined_realtime(uint8_t b) {}
   constexpr void handle_clock() {}
   constexpr void handle_start() {}
   constexpr void handle_continue() {}
@@ -229,33 +263,26 @@ struct DefaultHandler {
   // this will only be called if you use ParserWithSysexBuffer
   constexpr void handle_sysex(std::span<const uint8_t> sysex) {}
 
-  constexpr void handle_song_select(const uint8_t song) {}
-  constexpr void handle_midi_time_code(const uint8_t i) {}
+  constexpr void handle_song_select(uint8_t song) {}
+  constexpr void handle_midi_time_code(uint8_t i) {}
 
-  constexpr void handle_program_change(const uint8_t chan, const uint8_t pg) {}
+  constexpr void handle_program_change(uint8_t chan, uint8_t pg) {}
 
-  constexpr void handle_channel_pressure(const uint8_t chan, const uint8_t v) {}
+  constexpr void handle_channel_pressure(uint8_t chan, uint8_t v) {}
 
-  constexpr void handle_note_on(const uint8_t chan, const uint8_t note,
-                                const uint8_t velocity) {}
+  constexpr void handle_note_on(uint8_t chan, uint8_t note, uint8_t vel) {}
 
-  constexpr void handle_note_off(const uint8_t chan, const uint8_t note,
-                                 const uint8_t velocity) {}
+  constexpr void handle_note_off(uint8_t chan, uint8_t note, uint8_t vel) {}
 
-  constexpr void handle_control_change(const uint8_t chan, const uint8_t cc,
-                                       const uint8_t val) {}
-  constexpr void handle_channel_mode(const uint8_t chan, const uint8_t cc,
-                                     const uint8_t val) {}
+  constexpr void handle_control_change(uint8_t chan, uint8_t cc, uint8_t val) {}
+  constexpr void handle_channel_mode(uint8_t chan, uint8_t cc, uint8_t val) {}
 
-  constexpr void handle_polyphonic_aftertouch(const uint8_t chan,
-                                              const uint8_t note,
-                                              const uint8_t val) {}
+  constexpr void handle_polyphonic_aftertouch(uint8_t chan, uint8_t note,
+                                              uint8_t val) {}
 
-  constexpr void handle_pitch_bend(const uint8_t chan, const uint8_t lsb,
-                                   const uint8_t msb) {}
+  constexpr void handle_pitch_bend(uint8_t chan, uint8_t lsb, uint8_t msb) {}
 
-  constexpr void handle_song_position_pointer(const uint8_t lsb,
-                                              const uint8_t msb) {}
+  constexpr void handle_song_position_pointer(uint8_t lsb, uint8_t msb) {}
 };
 
 } // namespace EmbeddedMidi

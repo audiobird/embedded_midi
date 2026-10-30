@@ -1,6 +1,8 @@
 #pragma once
 
+#include <cassert>
 #include <cstdint>
+#include <span>
 
 namespace EmbeddedMidi {
 
